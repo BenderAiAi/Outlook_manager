@@ -1,0 +1,14 @@
+poll_interval_seconds = 30
+manage_categories = true
+# state_db = ".outlook-exporter.sqlite3"
+
+[[routes]]
+source = ["Inbox", "Необработанные"]
+move_to = ["Inbox", "Обработанные"]
+output_dir = "./exported"
+allowed_extensions = ["xlsx", "xls", "xlsm", "xlsb"]
+save_attachments = true
+save_message = false
+unread_only = true
+# mark_read_after_export = true
+# subject_contains = "Отчёт"

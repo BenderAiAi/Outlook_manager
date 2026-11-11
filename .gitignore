@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+.venv/
+.DS_Store
+
+/config.toml
+/config.*.toml
+!/config.example.toml
+/.outlook-*
+*.sqlite3
+*.sqlite3-*
+*.sqlite3.lock
+/exported/

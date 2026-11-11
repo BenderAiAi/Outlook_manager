@@ -1,0 +1,710 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Настройки Outlook Exporter</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: Inter, "Segoe UI", system-ui, sans-serif;
+      color: #182334;
+      background: #f3f6fa;
+      --panel: #fff;
+      --border: #d9e2ec;
+      --muted: #526174;
+      --accent: #174ec5;
+      --accent-soft: #eaf1ff;
+      --error: #9b2424;
+      --success: #146146;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; }
+    body { margin: 0; }
+    button, input { font: inherit; }
+    button { cursor: pointer; }
+    button:disabled { cursor: default; opacity: .55; }
+    button:focus-visible, input:focus-visible, summary:focus-visible {
+      outline: 3px solid #8caaf2;
+      outline-offset: 2px;
+    }
+
+    .masthead { color: #fff; background: #12233f; }
+    .wrap { width: min(100% - 40px, 1050px); margin-inline: auto; }
+    .masthead .wrap { padding-block: 40px 42px; }
+    .app-name { margin: 0 0 10px; color: #b9cefb; font-size: .86rem; font-weight: 650; }
+    h1 { margin: 0; font-size: clamp(1.85rem, 4vw, 2.55rem); line-height: 1.15; }
+    h2 { margin: 0; font-size: 1.2rem; }
+    h3 { margin: 0; font-size: 1rem; }
+    .config-path {
+      margin: 12px 0 0;
+      color: #cbd7ed;
+      font-size: .88rem;
+      overflow-wrap: anywhere;
+    }
+    main { padding-block: 32px 44px; }
+    form { margin: 0; }
+    .section-head, .route-head, .actions, .dialog-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+    }
+    .section-head { margin-bottom: 14px; }
+    .rules { display: grid; gap: 16px; }
+    .route, .general {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 13px;
+    }
+    .route-head {
+      padding: 12px 20px;
+      border-bottom: 1px solid #e9edf3;
+      background: #fafbfd;
+      border-radius: 13px 13px 0 0;
+    }
+    .route-grid, .general-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 18px 22px;
+      padding: 20px;
+    }
+    .field { min-width: 0; }
+    .field label { display: block; margin-bottom: 7px; font-size: .9rem; font-weight: 650; }
+    .field label span { color: var(--muted); font-weight: 400; }
+    .field p, .caption { margin: 7px 0 0; color: var(--muted); font-size: .82rem; line-height: 1.45; }
+    .inline-field { display: flex; gap: 7px; }
+    input:not([type="checkbox"]) {
+      display: block;
+      width: 100%;
+      min-width: 0;
+      min-height: 40px;
+      padding: 8px 10px;
+      color: inherit;
+      background: var(--panel);
+      border: 1px solid #b8c6d7;
+      border-radius: 7px;
+    }
+    input::placeholder { color: #6a7788; opacity: 1; }
+    input:disabled { opacity: .62; }
+    input[type="checkbox"] { width: 1rem; height: 1rem; accent-color: var(--accent); margin: 0; }
+    .check {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: #36445a;
+      font-size: .89rem;
+      cursor: pointer;
+    }
+    .field .check { display: flex; margin-bottom: 5px; font-weight: 400; }
+    .field .check + .check { margin-top: 8px; }
+    .field .move-read { margin-top: 12px; }
+    .field-title { margin: 0 0 10px; font-size: .9rem; font-weight: 650; }
+    .route-flow { overflow-wrap: anywhere; }
+    .extra { margin: 0 20px 18px; border-top: 1px solid #e9edf3; }
+    .extra summary { padding-top: 14px; cursor: pointer; font-size: .9rem; font-weight: 650; }
+    .extra .route-grid { padding: 15px 0 0; }
+    .extra .check { align-self: end; min-height: 40px; }
+    .button {
+      flex: none;
+      min-height: 39px;
+      padding: 8px 13px;
+      border: 1px solid #b8c6d7;
+      border-radius: 7px;
+      background: var(--panel);
+      color: #223653;
+      font-size: .87rem;
+      font-weight: 650;
+      line-height: 1.25;
+    }
+    .button:hover:not(:disabled) { border-color: #7892bd; background: #f3f7ff; }
+    .primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+    .primary:hover:not(:disabled) { background: #133ea0; border-color: #133ea0; }
+    .quiet { border-color: transparent; color: var(--muted); background: transparent; }
+    .general { margin-top: 20px; }
+    .general summary { padding: 17px 20px; cursor: pointer; font-weight: 650; }
+    .general-grid { padding-top: 2px; }
+    .general-grid .check { align-self: end; min-height: 40px; }
+    .actions {
+      flex-wrap: wrap;
+      padding: 20px 0 0;
+      margin-top: 18px;
+      border-top: 1px solid var(--border);
+    }
+    .action-buttons { display: flex; flex-wrap: wrap; gap: 8px; }
+    .notice {
+      margin: 12px 0 0;
+      padding: 11px 14px;
+      border-radius: 7px;
+      color: #29415e;
+      background: var(--accent-soft);
+      font-size: .88rem;
+      line-height: 1.45;
+      overflow-wrap: anywhere;
+    }
+    .notice:empty { display: none; }
+    .notice[data-kind="error"] { background: #fbe9e9; color: var(--error); }
+    .notice[data-kind="success"] { background: #e5f5ed; color: var(--success); }
+    [hidden] { display: none !important; }
+
+    dialog {
+      width: min(100% - 30px, 560px);
+      max-height: calc(100% - 30px);
+      padding: 0;
+      color: #182334;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 13px;
+      box-shadow: 0 24px 85px #14254648;
+    }
+    dialog::backdrop { background: #15243b80; }
+    .dialog-head { padding: 14px 19px; border-bottom: 1px solid var(--border); }
+    .dialog-body { padding: 16px 19px 18px; }
+    .folder-path {
+      margin: 0;
+      min-height: 20px;
+      color: #3f5576;
+      font-size: .85rem;
+      overflow-wrap: anywhere;
+    }
+    .folder-list {
+      display: grid;
+      gap: 4px;
+      max-height: min(300px, 33vh);
+      overflow-y: auto;
+      margin: 9px 0 0;
+      padding: 4px;
+      list-style: none;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+    }
+    .folder-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 14px;
+      width: 100%;
+      padding: 8px 10px;
+      border: 0;
+      border-radius: 5px;
+      background: #f3f6fb;
+      color: #203b67;
+      text-align: left;
+      overflow-wrap: anywhere;
+    }
+    .folder-item:hover { background: #e7efff; }
+    .folder-item small { color: var(--muted); }
+    .empty-list { padding: 8px 10px; color: var(--muted); font-size: .87rem; }
+    .folder-create { margin-top: 16px; }
+    .folder-create summary { cursor: pointer; font-size: .9rem; font-weight: 650; }
+    .folder-create .field { margin-top: 12px; }
+    .folder-actions { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; margin-top: 16px; }
+
+    @media (max-width: 740px) {
+      .route-grid, .general-grid { grid-template-columns: 1fr; gap: 14px; }
+      .masthead .wrap { padding-block: 28px; }
+    }
+    @media (max-width: 390px) {
+      .wrap { width: calc(100% - 24px); }
+      .route-head, .route-grid, .general-grid { padding-inline: 12px; }
+      .section-head { align-items: flex-start; flex-direction: column; }
+      .inline-field .button { padding-inline: 9px; }
+    }
+  </style>
+</head>
+<body>
+  <header class="masthead">
+    <div class="wrap">
+      <p class="app-name">Outlook Exporter</p>
+      <h1>Настройки выгрузки</h1>
+      <p id="config-path" class="config-path">Загрузка конфигурации…</p>
+    </div>
+  </header>
+  <main class="wrap">
+    <p id="load-status" class="notice" role="status"></p>
+    <form id="settings-form" hidden>
+      <div class="section-head">
+        <h2>Правила обработки</h2>
+        <button id="add-route" class="button" type="button">Добавить правило</button>
+      </div>
+      <div id="routes" class="rules"></div>
+
+      <details class="general">
+        <summary>Общие настройки</summary>
+        <div class="general-grid">
+          <div class="field">
+            <label for="poll-interval">Интервал проверки, сек.</label>
+            <input id="poll-interval" type="number" min="1" step="1" required>
+          </div>
+          <label class="check" for="manage-categories">
+            <input id="manage-categories" type="checkbox">
+            Создавать цветовые категории в Outlook
+          </label>
+          <div class="field">
+            <label for="state-db">Файл журнала</label>
+            <input id="state-db" type="text" spellcheck="false" placeholder=".outlook-exporter.sqlite3">
+            <p>Журнал помогает продолжить выгрузку после сбоя без повторного сохранения файлов.</p>
+          </div>
+        </div>
+      </details>
+
+      <div class="actions">
+        <label class="check" for="check-outlook">
+          <input id="check-outlook" type="checkbox">
+          Проверять наличие папок в Outlook
+        </label>
+        <div class="action-buttons">
+          <button id="validate" class="button" type="button">Проверить</button>
+          <button id="save" class="button primary" type="submit">Сохранить настройки</button>
+        </div>
+      </div>
+      <p id="save-status" class="notice" role="status"></p>
+    </form>
+  </main>
+
+  <template id="route-template">
+    <article class="route">
+      <div class="route-head">
+        <div>
+          <h3 class="route-title"></h3>
+          <p class="caption route-flow"></p>
+        </div>
+        <button type="button" class="remove-route button quiet">Удалить правило</button>
+      </div>
+      <div class="route-grid">
+        <div class="field">
+          <label data-label="source">Откуда брать письма</label>
+          <div class="inline-field">
+            <input data-field="source" type="text" required spellcheck="false" placeholder="Входящие / Необработанные">
+            <button data-pick="source" class="button" type="button">Выбрать</button>
+          </div>
+          <p>Папка Outlook, за которой следит Exporter.</p>
+        </div>
+        <div class="field">
+          <label data-label="output-dir">Куда сохранять файлы</label>
+          <div class="inline-field">
+            <input data-field="output-dir" type="text" required spellcheck="false" placeholder="C:\MailExport или ./exported">
+            <button class="pick-output button" type="button" aria-label="Выбрать каталог на диске">Выбрать</button>
+          </div>
+          <p>Относительный путь считается от папки с config.toml.</p>
+          <p class="output-status notice" role="status"></p>
+        </div>
+        <div class="field">
+          <label data-label="move-to">Куда переносить письмо <span>(необязательно)</span></label>
+          <div class="inline-field">
+            <input data-field="move-to" type="text" spellcheck="false" placeholder="Входящие / Обработанные">
+            <button data-pick="move-to" class="button" type="button">Выбрать</button>
+          </div>
+          <p>После выгрузки письмо получает метку «Выгружено» и переносится, если выбрана папка. Письма с меткой «Дубликат» или «Ошибка выгрузки» остаются в исходной папке.</p>
+          <label class="check move-read" data-label="mark-read-after-export">
+            <input data-field="mark-read-after-export" type="checkbox"> Отмечать успешно выгруженное письмо как прочитанное
+          </label>
+        </div>
+        <div class="field">
+          <label data-label="extensions">Разрешённые расширения</label>
+          <input data-field="extensions" type="text" spellcheck="false" placeholder="xlsx, csv, pdf">
+          <p>Перечислите через запятую. Пустое поле разрешает все файловые вложения.</p>
+        </div>
+        <div class="field">
+          <h4 class="field-title">Что сохранять</h4>
+          <label class="check" data-label="save-attachments">
+            <input data-field="save-attachments" type="checkbox"> Вложения
+          </label>
+          <label class="check" data-label="save-message">
+            <input data-field="save-message" type="checkbox"> Письмо целиком (.msg)
+          </label>
+          <p>Файл .msg содержит письмо и его вложения.</p>
+        </div>
+      </div>
+      <details class="extra">
+        <summary>Условия отбора писем</summary>
+        <div class="route-grid">
+          <div class="field">
+            <label data-label="subject-contains">Фрагмент темы письма</label>
+            <input data-field="subject-contains" type="text" placeholder="Например, ежемесячный отчёт">
+            <p>Регистр букв не учитывается.</p>
+          </div>
+          <label class="check" data-label="unread-only">
+            <input data-field="unread-only" type="checkbox"> Только непрочитанные
+          </label>
+        </div>
+      </details>
+    </article>
+  </template>
+
+  <dialog id="folder-dialog" aria-labelledby="folder-title">
+    <div class="dialog-head">
+      <h2 id="folder-title">Папки Outlook</h2>
+      <button id="close-picker" type="button" class="button quiet">Закрыть</button>
+    </div>
+    <div class="dialog-body">
+      <p id="folder-path" class="folder-path"></p>
+      <ul id="folder-list" class="folder-list" aria-label="Вложенные папки"></ul>
+      <p id="folder-status" class="notice" role="status"></p>
+      <details id="create-options" class="folder-create" hidden>
+        <summary>Новая папка</summary>
+        <form id="create-folder">
+          <div class="field">
+            <label for="folder-name">Имя новой папки в текущей папке Outlook</label>
+            <div class="inline-field">
+              <input id="folder-name" type="text" required spellcheck="false">
+              <button id="create-button" class="button" type="submit">Создать в Outlook</button>
+            </div>
+            <p>Папка появится в Outlook сразу после нажатия этой кнопки.</p>
+          </div>
+        </form>
+      </details>
+      <div class="folder-actions">
+        <button id="folder-up" class="button" type="button">На уровень выше</button>
+        <button id="select-folder" class="button primary" type="button">Выбрать эту папку</button>
+      </div>
+    </div>
+  </dialog>
+
+  <script>
+    "use strict";
+
+    const form = document.querySelector("#settings-form");
+    const routes = document.querySelector("#routes");
+    const routeTemplate = document.querySelector("#route-template");
+    const intervalInput = document.querySelector("#poll-interval");
+    const categoriesInput = document.querySelector("#manage-categories");
+    const journalInput = document.querySelector("#state-db");
+    const validateButton = document.querySelector("#validate");
+    const saveButton = document.querySelector("#save");
+    const saveStatus = document.querySelector("#save-status");
+    const folderDialog = document.querySelector("#folder-dialog");
+    const folderPath = document.querySelector("#folder-path");
+    const folderList = document.querySelector("#folder-list");
+    const folderStatus = document.querySelector("#folder-status");
+    const selectFolder = document.querySelector("#select-folder");
+    const folderUp = document.querySelector("#folder-up");
+    const createOptions = document.querySelector("#create-options");
+    const createForm = document.querySelector("#create-folder");
+    const createButton = document.querySelector("#create-button");
+    const folderName = document.querySelector("#folder-name");
+    const exactPaths = new WeakMap();
+    let csrfToken = "";
+    let routeCounter = 0;
+    let currentFolder = [];
+    let targetInput = null;
+    let folderRequest = null;
+
+    function notice(element, message = "", kind = "info") {
+      element.textContent = message;
+      element.dataset.kind = kind;
+    }
+
+    async function request(path, data, signal) {
+      const options = {signal};
+      if (data !== undefined) {
+        options.method = "POST";
+        options.headers = {"Content-Type": "application/json", "X-CSRF-Token": csrfToken};
+        options.body = JSON.stringify(data);
+      }
+      const response = await fetch(path, options);
+      if (!response.headers.get("Content-Type")?.includes("application/json")) {
+        throw new Error(`Ошибка сервера (HTTP ${response.status}).`);
+      }
+      const result = await response.json();
+      if (!response.ok) {
+        throw new Error(result.error || `Ошибка сервера (HTTP ${response.status}).`);
+      }
+      return result;
+    }
+
+    function writeFolder(input, path) {
+      input.value = path.join(" / ");
+      exactPaths.set(input, {value: input.value, path});
+    }
+
+    function readFolder(input) {
+      const exactPath = exactPaths.get(input);
+      if (exactPath?.value === input.value) {
+        return exactPath.path;
+      }
+      return input.value.trim().split(/[\\/]/).map(segment => segment.trim()).filter(Boolean);
+    }
+
+    function field(route, name) {
+      return route.querySelector(`[data-field="${name}"]`);
+    }
+
+    function updateRouteFlow(route) {
+      const source = readFolder(field(route, "source")).join(" / ") || "Исходная папка";
+      const outputDir = field(route, "output-dir").value.trim();
+      const exportStep = outputDir ? `выгрузка в ${outputDir}` : "выгрузка файлов";
+      const destination = readFolder(field(route, "move-to")).join(" / ") || "письмо остаётся на месте";
+      route.querySelector(".route-flow").textContent = `${source} → ${exportStep} → ${destination}`;
+    }
+
+    function updateRouteLabels() {
+      Array.from(routes.children).forEach((route, index) => {
+        route.querySelector(".route-title").textContent = `Правило ${index + 1}`;
+        const remove = route.querySelector(".remove-route");
+        remove.disabled = routes.children.length === 1;
+        remove.setAttribute("aria-label", `Удалить правило ${index + 1}`);
+      });
+    }
+
+    function addRoute(rule = {}) {
+      const route = routeTemplate.content.firstElementChild.cloneNode(true);
+      routeCounter += 1;
+      route.querySelectorAll("[data-field]").forEach(input => {
+        input.id = `route-${routeCounter}-${input.dataset.field}`;
+        route.querySelector(`[data-label="${input.dataset.field}"]`).htmlFor = input.id;
+      });
+      writeFolder(field(route, "source"), rule.source || []);
+      writeFolder(field(route, "move-to"), rule.move_to || []);
+      field(route, "output-dir").value = rule.output_dir ?? "./exported";
+      field(route, "extensions").value = (rule.allowed_extensions ?? ["xlsx", "xls", "xlsm", "csv", "pdf", "zip", "txt", "doc", "docx"]).join(", ");
+      const saveAttachments = field(route, "save-attachments");
+      const saveMessage = field(route, "save-message");
+      saveAttachments.checked = rule.save_attachments ?? true;
+      saveMessage.checked = rule.save_message ?? false;
+      field(route, "subject-contains").value = rule.subject_contains ?? "";
+      field(route, "unread-only").checked = rule.unread_only ?? false;
+      field(route, "mark-read-after-export").checked = rule.mark_read_after_export ?? false;
+      function updateOutputs() {
+        field(route, "extensions").disabled = !saveAttachments.checked;
+        saveAttachments.setCustomValidity(saveAttachments.checked || saveMessage.checked
+          ? "" : "Выберите, что сохранять в этом правиле.");
+      }
+      saveAttachments.addEventListener("change", updateOutputs);
+      saveMessage.addEventListener("change", updateOutputs);
+      updateOutputs();
+      route.querySelector(".pick-output").addEventListener("click", event => pickOutput(route, event.currentTarget));
+      route.querySelectorAll("[data-pick]").forEach(button => {
+        const input = field(route, button.dataset.pick);
+        button.setAttribute("aria-label", button.dataset.pick === "source"
+          ? "Выбрать папку с письмами" : "Выбрать папку для переноса писем");
+        button.addEventListener("click", () => openPicker(input));
+      });
+      route.querySelector(".remove-route").addEventListener("click", () => {
+        route.remove();
+        updateRouteLabels();
+        notice(saveStatus);
+      });
+      routes.append(route);
+      updateRouteLabels();
+      updateRouteFlow(route);
+      route.addEventListener("input", () => updateRouteFlow(route));
+      return route;
+    }
+
+    function collectSettings() {
+      const settings = {
+        poll_interval_seconds: Number(intervalInput.value),
+        manage_categories: categoriesInput.checked,
+        routes: Array.from(routes.children, route => {
+          const rule = {
+            source: readFolder(field(route, "source")),
+            output_dir: field(route, "output-dir").value.trim(),
+            allowed_extensions: field(route, "extensions").value.split(/[,;\s]+/)
+              .map(value => value.replace(/^\./, "").toLowerCase()).filter(Boolean),
+            save_attachments: field(route, "save-attachments").checked,
+            save_message: field(route, "save-message").checked,
+            subject_contains: field(route, "subject-contains").value.trim(),
+            unread_only: field(route, "unread-only").checked,
+            mark_read_after_export: field(route, "mark-read-after-export").checked,
+          };
+          const moveTo = readFolder(field(route, "move-to"));
+          if (moveTo.length) {
+            rule.move_to = moveTo;
+          }
+          return rule;
+        }),
+      };
+      if (journalInput.value.trim()) {
+        settings.state_db = journalInput.value.trim();
+      }
+      return settings;
+    }
+
+    async function pickOutput(route, button) {
+      const status = route.querySelector(".output-status");
+      button.disabled = true;
+      notice(status, "Открывается диалог выбора папки Windows…");
+      try {
+        const result = await request("/api/output-directory", {});
+        if (result.path) {
+          field(route, "output-dir").value = result.path;
+          updateRouteFlow(route);
+          notice(saveStatus);
+        }
+        notice(status);
+      } catch (error) {
+        notice(status, error.message, "error");
+      } finally {
+        button.disabled = false;
+      }
+    }
+
+    async function perform(save) {
+      if (!form.reportValidity()) {
+        return;
+      }
+      const settings = collectSettings();
+      validateButton.disabled = true;
+      saveButton.disabled = true;
+      notice(saveStatus, save ? "Сохранение…" : "Проверка…");
+      try {
+        if (save) {
+          const result = await request("/api/settings", {settings});
+          notice(saveStatus, result.message, "success");
+        } else {
+          const checkOutlook = document.querySelector("#check-outlook").checked;
+          const result = await request("/api/validate", {settings, check_outlook: checkOutlook});
+          notice(saveStatus, result.message, "success");
+        }
+      } catch (error) {
+        notice(saveStatus, error.message, "error");
+      } finally {
+        validateButton.disabled = false;
+        saveButton.disabled = false;
+      }
+    }
+
+    function folderControls(ready, busy = false) {
+      folderUp.disabled = !currentFolder.length || busy;
+      selectFolder.disabled = !ready || !currentFolder.length || busy;
+      createOptions.hidden = !ready;
+      createButton.disabled = busy;
+      folderName.disabled = busy;
+    }
+
+    function showFolderMessage(message) {
+      const item = document.createElement("li");
+      item.className = "empty-list";
+      item.textContent = message;
+      folderList.replaceChildren(item);
+    }
+
+    function openPicker(input) {
+      targetInput = input;
+      folderDialog.showModal();
+      loadFolder([]);
+    }
+
+    async function loadFolder(path, successMessage = "") {
+      folderRequest?.abort();
+      const controller = new AbortController();
+      folderRequest = controller;
+      currentFolder = path;
+      folderPath.textContent = path.join(" / ") || "Почтовый ящик по умолчанию";
+      createOptions.open = false;
+      createForm.reset();
+      notice(folderStatus);
+      folderControls(false);
+      showFolderMessage("Загрузка папок…");
+      try {
+        const query = new URLSearchParams({path: JSON.stringify(path)});
+        const result = await request(`/api/folders?${query}`, undefined, controller.signal);
+        if (!result.folders.length) {
+          showFolderMessage("Вложенных папок нет.");
+        } else {
+          folderList.replaceChildren(...result.folders.map(folder => {
+            const item = document.createElement("li");
+            const button = document.createElement("button");
+            const name = document.createElement("span");
+            const indicator = document.createElement("small");
+            button.type = "button";
+            button.className = "folder-item";
+            name.textContent = folder.name;
+            indicator.textContent = "Открыть";
+            button.append(name, indicator);
+            button.addEventListener("click", () => loadFolder(folder.path));
+            item.append(button);
+            return item;
+          }));
+        }
+        folderControls(true);
+        notice(folderStatus, successMessage, "success");
+      } catch (error) {
+        if (error.name === "AbortError") {
+          return;
+        }
+        showFolderMessage("Путь к папке можно ввести вручную.");
+        notice(folderStatus, error.message, "error");
+      }
+    }
+
+    async function createFolder(event) {
+      event.preventDefault();
+      const name = folderName.value.trim();
+      if (!name) {
+        notice(folderStatus, "Введите имя новой папки.", "error");
+        folderName.focus();
+        return;
+      }
+      const parent = currentFolder;
+      folderList.inert = true;
+      folderControls(true, true);
+      notice(folderStatus, "Создание папки…");
+      try {
+        const result = await request("/api/folders", {parent, name});
+        if (folderDialog.open && currentFolder === parent) {
+          await loadFolder(result.path, "Папка создана. Её можно выбрать для этого правила.");
+        }
+      } catch (error) {
+        if (folderDialog.open && currentFolder === parent) {
+          notice(folderStatus, error.message, "error");
+        }
+      } finally {
+        folderList.inert = false;
+        if (folderDialog.open && currentFolder === parent) {
+          folderControls(true);
+        }
+      }
+    }
+
+    document.querySelector("#close-picker").addEventListener("click", () => folderDialog.close());
+    folderDialog.addEventListener("close", () => folderRequest?.abort());
+    folderUp.addEventListener("click", () => loadFolder(currentFolder.slice(0, -1)));
+    selectFolder.addEventListener("click", () => {
+      writeFolder(targetInput, currentFolder);
+      updateRouteFlow(targetInput.closest(".route"));
+      notice(saveStatus);
+      folderDialog.close();
+    });
+    createForm.addEventListener("submit", createFolder);
+    document.querySelector("#add-route").addEventListener("click", () => {
+      field(addRoute(), "source").focus();
+      notice(saveStatus);
+    });
+    validateButton.addEventListener("click", () => perform(false));
+    form.addEventListener("submit", event => {
+      event.preventDefault();
+      perform(true);
+    });
+    form.addEventListener("input", () => notice(saveStatus));
+
+    async function initialise() {
+      const configPath = document.querySelector("#config-path");
+      try {
+        const result = await request("/api/settings");
+        csrfToken = result.csrf_token;
+        configPath.textContent = result.exists
+          ? result.config_path
+          : `Будет создан файл ${result.config_path}`;
+        if (result.load_error) {
+          notice(document.querySelector("#load-status"), `${result.load_error} Сохранение заменит содержимое файла.`, "error");
+        }
+        intervalInput.value = result.settings.poll_interval_seconds;
+        categoriesInput.checked = result.settings.manage_categories;
+        journalInput.value = result.settings.state_db ?? "";
+        result.settings.routes.forEach(addRoute);
+        if (!routes.children.length) {
+          addRoute();
+        }
+        form.hidden = false;
+      } catch (error) {
+        configPath.textContent = "Конфигурация недоступна";
+        notice(document.querySelector("#load-status"), error.message, "error");
+      }
+    }
+
+    initialise();
+  </script>
+</body>
+</html>
