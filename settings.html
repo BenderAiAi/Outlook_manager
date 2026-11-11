@@ -105,6 +105,10 @@
     .extra summary { padding-top: 14px; cursor: pointer; font-size: .9rem; font-weight: 650; }
     .extra .route-grid { padding: 15px 0 0; }
     .extra .check { align-self: end; min-height: 40px; }
+    .outlook-rule { margin-top: 12px; }
+    .outlook-rule summary { cursor: pointer; color: #223653; font-size: .88rem; font-weight: 650; }
+    .outlook-rule-fields { display: grid; gap: 10px; margin-top: 12px; }
+    .outlook-rule-fields > .button { justify-self: start; }
     .button {
       flex: none;
       min-height: 39px;
@@ -279,6 +283,22 @@
             <button data-pick="source" class="button" type="button">Выбрать</button>
           </div>
           <p>Папка Outlook, за которой следит Exporter.</p>
+          <details class="outlook-rule">
+            <summary>Правило Outlook для входящих (необязательно)</summary>
+            <p>Outlook будет перемещать новые письма в эту папку, когда совпадут отправитель и фрагмент темы. Порядок правил влияет на обработку.</p>
+            <div class="outlook-rule-fields">
+              <div class="field">
+                <label data-label="rule-sender">Адрес отправителя</label>
+                <input data-field="rule-sender" type="text" inputmode="email" spellcheck="false" placeholder="reports@example.com">
+              </div>
+              <div class="field">
+                <label data-label="rule-subject">Фрагмент темы</label>
+                <input data-field="rule-subject" type="text" placeholder="Ежедневный отчёт">
+              </div>
+              <button class="create-outlook-rule button" type="button">Создать правило в Outlook</button>
+            </div>
+            <p class="outlook-rule-status notice" role="status"></p>
+          </details>
         </div>
         <div class="field">
           <label data-label="output-dir">Куда сохранять файлы</label>
@@ -474,6 +494,14 @@
       saveMessage.addEventListener("change", updateOutputs);
       updateOutputs();
       route.querySelector(".pick-output").addEventListener("click", event => pickOutput(route, event.currentTarget));
+      route.querySelector(".create-outlook-rule").addEventListener("click", event => {
+        createOutlookRule(route, event.currentTarget);
+      });
+      route.querySelector(".outlook-rule-fields").addEventListener("keydown", event => {
+        if (event.key === "Enter" && event.target.matches("input")) {
+          event.preventDefault();
+        }
+      });
       route.querySelectorAll("[data-pick]").forEach(button => {
         const input = field(route, button.dataset.pick);
         button.setAttribute("aria-label", button.dataset.pick === "source"
@@ -519,6 +547,38 @@
         settings.state_db = journalInput.value.trim();
       }
       return settings;
+    }
+
+    async function createOutlookRule(route, button) {
+      const status = route.querySelector(".outlook-rule-status");
+      const sourceInput = field(route, "source");
+      const senderInput = field(route, "rule-sender");
+      const subjectInput = field(route, "rule-subject");
+      const folder = readFolder(sourceInput);
+      const sender = senderInput.value.trim();
+      const subjectContains = subjectInput.value.trim();
+
+      if (!folder.length) {
+        notice(status, "Выберите исходную папку Outlook.", "error");
+        sourceInput.focus();
+        return;
+      }
+      if (!sender || !subjectContains) {
+        notice(status, "Укажите адрес отправителя и фрагмент темы.", "error");
+        (sender ? subjectInput : senderInput).focus();
+        return;
+      }
+
+      button.disabled = true;
+      notice(status, "Создание правила Outlook…");
+      try {
+        const result = await request("/api/outlook-rules", {folder, sender, subject_contains: subjectContains});
+        notice(status, result.message, result.created ? "success" : "info");
+      } catch (error) {
+        notice(status, error.message, "error");
+      } finally {
+        button.disabled = false;
+      }
     }
 
     async function pickOutput(route, button) {

@@ -39,7 +39,7 @@ def folder_parts(value: object) -> tuple[str, ...]:
 
 def open_mailbox(*, dry_run: bool) -> OutlookMailbox:
     if os.name != "nt":
-        raise ValueError("Выбор папок Outlook доступен на Windows с классическим Outlook")
+        raise ValueError("Подключение к Outlook доступно на Windows с классическим Outlook")
     return OutlookMailbox(dry_run=dry_run, manage_categories=False)
 
 
@@ -187,6 +187,22 @@ class SettingsHandler(BaseHTTPRequestHandler):
             if not isinstance(name, str) or not name.strip():
                 raise ValueError("Введите имя новой папки")
             result = open_mailbox(dry_run=False).create_folder(parent, name)
+        elif path == "/api/outlook-rules":
+            folder = folder_parts(data.get("folder"))
+            if not folder:
+                raise ValueError("Выберите папку, в которую Outlook будет складывать письма")
+            sender = data.get("sender")
+            subject = data.get("subject_contains")
+            if not isinstance(sender, str) or not sender.strip():
+                raise ValueError("Введите адрес отправителя")
+            if not isinstance(subject, str) or not subject.strip():
+                raise ValueError("Введите постоянную часть темы")
+            result = open_mailbox(dry_run=False).create_incoming_rule(folder, sender.strip(), subject.strip())
+            name = result["name"]
+            if result["created"]:
+                result["message"] = f"Правило «{name}» создано в Outlook. Оно применяется к новым письмам."
+            else:
+                result["message"] = f"Правило «{name}» уже есть. Его состояние можно проверить в Outlook."
         elif path == "/api/output-directory":
             result = {"path": pick_output_directory()}
         else:

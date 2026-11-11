@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from email.errors import HeaderParseError
+from email.headerregistry import Address
 from functools import wraps
+from hashlib import sha256
 from pathlib import Path
 from typing import Any, Iterator
 
@@ -18,6 +21,8 @@ OL_FOLDER_DELETED_ITEMS = 3
 OL_FOLDER_OUTBOX = 4
 OL_FOLDER_JUNK = 23
 OL_MAIL = 43
+OL_MAIL_ITEM = 0
+OL_RULE_RECEIVE = 0
 OL_BY_VALUE = 1
 OL_YES_NO = 6
 OL_MSG_UNICODE = 9
@@ -208,6 +213,63 @@ class OutlookMailbox:
             raise ValueError(f"Папка «{name}» уже есть на этом уровне Outlook.")
         folder = siblings.Add(name, OL_FOLDER_INBOX)
         return {"name": folder.Name, "path": [*_canonical_folder_path(parent), folder.Name]}
+
+    @_outlook_action("Не удалось создать правило Outlook")
+    def create_incoming_rule(
+        self, path: tuple[str, ...], sender: str, subject_contains: str,
+    ) -> dict[str, Any]:
+        self._require_write()
+        sender = sender.strip() if isinstance(sender, str) else ""
+        if not sender or any(ord(character) < 32 for character in sender):
+            raise ValueError("Укажите один полный почтовый адрес отправителя.")
+        try:
+            address = Address(addr_spec=sender)
+        except (ValueError, HeaderParseError, IndexError, AttributeError) as error:
+            raise ValueError("Укажите один полный почтовый адрес отправителя.") from error
+        if not address.username or not address.domain or address.addr_spec != sender:
+            raise ValueError("Укажите один полный почтовый адрес отправителя.")
+        if not isinstance(subject_contains, str) or any(ord(character) < 32 for character in subject_contains):
+            raise ValueError("Укажите фрагмент темы письма одной строкой.")
+        subject_contains = subject_contains.strip()
+        if not subject_contains:
+            raise ValueError("Укажите фрагмент темы письма.")
+
+        if not path:
+            raise ValueError("Выберите папку для входящих писем правила.")
+        folder_id = self.resolve_destination_folder(path)
+        if folder_id == self._inbox.EntryID:
+            raise ValueError("Выберите папку, в которую Outlook будет переносить письма из «Входящих».")
+        folder = self._folder(folder_id)
+        if folder.DefaultItemType != OL_MAIL_ITEM:
+            raise ValueError("Выберите почтовую папку Outlook для правила.")
+
+        identity = "\0".join((address.username, address.domain.casefold(), subject_contains, folder_id))
+        name = "Outlook Exporter " + sha256(identity.encode("utf-8")).hexdigest()[:16]
+        rules = self._inbox.Store.GetRules()
+        for index in range(1, rules.Count + 1):
+            if rules.Item(index).Name.casefold() == name.casefold():
+                return {"name": name, "created": False}
+
+        rule = rules.Create(name, OL_RULE_RECEIVE)
+        from_condition = rule.Conditions.From
+        from_condition.Recipients.Add(sender)
+        if not from_condition.Recipients.ResolveAll():
+            raise OutlookError("Outlook не смог найти отправителя по этому адресу.")
+        from_condition.Enabled = True
+
+        subject_condition = rule.Conditions.Subject
+        # pywin32 marshals this tuple as the SAFEARRAY(VARIANT) expected by Outlook.
+        subject_condition.Text = (subject_contains,)
+        subject_condition.Enabled = True
+
+        move_action = rule.Actions.MoveToFolder
+        move_action.Folder = folder
+        move_action.Enabled = True
+
+        rule.ExecutionOrder = rules.Count
+        rule.Enabled = True
+        rules.Save(False)
+        return {"name": name, "created": True}
 
     @_outlook_action("Не удалось прочитать письма Outlook")
     def iter_messages(self, folder_id: str) -> Iterator[dict[str, Any]]:
