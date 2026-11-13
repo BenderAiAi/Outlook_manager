@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import logging
+from datetime import datetime
 from email.errors import HeaderParseError
 from email.headerregistry import Address
 from functools import wraps
 from hashlib import sha256
+from math import ceil
 from pathlib import Path
-from typing import Any, Iterator
+from time import monotonic, sleep
+from typing import Any, Iterable, Iterator
 
 try:
     from pywintypes import com_error as _ComError
@@ -28,11 +32,18 @@ OL_YES_NO = 6
 OL_MSG_UNICODE = 9
 INBOX_NAMES = {"inbox", "входящие"}
 PROCESSED_PROPERTY = "Файлы выгружены"
+LOGGER = logging.getLogger(__name__)
+MAPI_PROPERTY = "http://schemas.microsoft.com/mapi/proptag/"
 INTERNET_MESSAGE_ID_SCHEMAS = (
-    "http://schemas.microsoft.com/mapi/proptag/0x1035001F",
-    "http://schemas.microsoft.com/mapi/proptag/0x1035001E",
+    MAPI_PROPERTY + "0x1035001F", MAPI_PROPERTY + "0x1035001E",
 )
+SENDER_SMTP_SCHEMAS = (MAPI_PROPERTY + "0x5D01001F", MAPI_PROPERTY + "0x5D01001E")
+ADDRESS_ENTRY_SMTP_SCHEMAS = (MAPI_PROPERTY + "0x39FE001E", MAPI_PROPERTY + "0x39FE001F")
+EXCHANGE_USER_TYPES = {0, 5}  # Exchange users and remote Exchange users.
 MAPI_E_NOT_FOUND = 0x8004010F
+MAPI_E_NO_SUPPORT = 0x80040102
+MAPI_E_BAD_CHARWIDTH = 0x80040103
+MAPI_E_NO_ACCESS = 0x80070005
 CATEGORY_COLORS = {
     "Выгружено": 5,
     "Нет файлов": 4,
@@ -94,26 +105,44 @@ def _matching_folders(folders: Any, name: str) -> list[Any]:
     return [folder for folder in folders if folder.Name.casefold() == folded_name]
 
 
-def _mapi_not_found(error: _ComError) -> bool:
+def _mapi_error_matches(error: _ComError, *expected: int) -> bool:
     info = getattr(error, "excepinfo", None)
     codes = (getattr(error, "hresult", None), info[5] if info and len(info) > 5 else None)
-    return any(isinstance(code, int) and (code & 0xFFFFFFFF) == MAPI_E_NOT_FOUND for code in codes)
+    return any(isinstance(code, int) and (code & 0xFFFFFFFF) in expected for code in codes)
 
 
-def _internet_message_id(mail: Any) -> str | None:
-    accessor = mail.PropertyAccessor
-    for schema in INTERNET_MESSAGE_ID_SCHEMAS:
+def _mapi_not_found(error: _ComError) -> bool:
+    return _mapi_error_matches(error, MAPI_E_NOT_FOUND)
+
+
+def _text_property(accessor: Any, schemas: tuple[str, ...], *, alternate_width: bool = False) -> str | None:
+    for index, schema in enumerate(schemas):
         try:
-            identity = accessor.GetProperty(schema)
+            value = accessor.GetProperty(schema)
         except _ComError as error:
-            if not _mapi_not_found(error):
-                raise
-            continue
-        if identity is not None and not isinstance(identity, str):
-            raise OutlookError("Идентификатор письма Outlook получен в неожиданном формате.")
-        if identity and identity.strip():
-            return identity
+            if _mapi_not_found(error):
+                continue
+            if alternate_width and index + 1 < len(schemas) and _mapi_error_matches(error, MAPI_E_BAD_CHARWIDTH):
+                continue
+            raise
+        if value is not None and not isinstance(value, str):
+            raise OutlookError("Текстовое свойство Outlook получено в неожиданном формате.")
+        if value and value.strip():
+            return value
     return None
+
+
+def _internet_message_id(mail: Any, *, alternate_width: bool = False) -> str | None:
+    return _text_property(mail.PropertyAccessor, INTERNET_MESSAGE_ID_SCHEMAS, alternate_width=alternate_width)
+
+
+def _folder_name(name: str) -> str:
+    if not isinstance(name, str) or any(ord(character) < 32 for character in name):
+        raise ValueError("Укажите имя новой папки Outlook.")
+    name = name.strip()
+    if not name or name in {".", ".."} or any(separator in name for separator in ("/", "\\")):
+        raise ValueError("Укажите имя одной папки Outlook без разделителей пути.")
+    return name
 
 
 class OutlookMailbox:
@@ -125,6 +154,7 @@ class OutlookMailbox:
         self._session = _open_session()
         self._inbox = self._session.GetDefaultFolder(OL_FOLDER_INBOX)
         self._store_id = self._inbox.StoreID
+        self._identity_warning_logged = False
 
     def _mail(self, message_id: str) -> Any:
         mail = self._session.GetItemFromID(message_id, self._store_id)
@@ -142,19 +172,29 @@ class OutlookMailbox:
         if self.dry_run:
             raise OutlookError("Пробный режим разрешает только чтение из Outlook.")
 
+    def _matching_children(self, folders: Any, name: str, *, root: bool) -> list[Any]:
+        matches = _matching_folders(folders, name)
+        if not matches and root and name.casefold() in INBOX_NAMES:
+            return [self._inbox]
+        return matches
+
     def _folder_at_path(self, path: tuple[str, ...]) -> Any:
-        canonical_path = _canonical_folder_path(path)
-        if canonical_path and canonical_path[0] == "Inbox":
+        if path[:1] == ("",):
+            folder = self._inbox.Store.GetRootFolder()
+            if len(path) < 2 or path[1].casefold() != folder.Name.casefold():
+                raise ValueError(f"Укажите папку в основном почтовом ящике Outlook «{folder.Name}».")
+            first_child = 2
+        elif path and path[0].casefold() in INBOX_NAMES:
             folder = self._inbox
             first_child = 1
         else:
             folder = self._inbox.Store.GetRootFolder()
             first_child = 0
 
-        for index, name in enumerate(canonical_path[first_child:], start=first_child):
-            matches = _matching_folders(folder.Folders, name)
+        for index, name in enumerate(path[first_child:], start=first_child):
+            matches = self._matching_children(folder.Folders, name, root=(path[:1] == ("",) and index == first_child))
             if len(matches) != 1:
-                folder_path = " / ".join(path[:index + 1])
+                folder_path = " / ".join(part for part in path[:index + 1] if part)
                 if not matches:
                     raise OutlookError(f"В Outlook отсутствует папка «{folder_path}».")
                 raise OutlookError(f"В Outlook несколько папок «{folder_path}».")
@@ -165,20 +205,69 @@ class OutlookMailbox:
     def resolve_folder(self, path: tuple[str, ...]) -> str:
         if not path:
             raise OutlookError("Укажите папку Outlook.")
-        return self._folder_at_path(path).EntryID
+        folder = self._folder_at_path(path)
+        if folder.DefaultItemType != OL_MAIL_ITEM:
+            raise ValueError("Выберите почтовую папку Outlook для отбора писем.")
+        return folder.EntryID
 
     @_outlook_action("Не удалось проверить папку назначения Outlook")
     def resolve_destination_folder(self, path: tuple[str, ...]) -> str:
         folder = self._folder_at_path(path)
+        self._require_allowed_destination(folder)
+        if folder.DefaultItemType != OL_MAIL_ITEM:
+            raise ValueError("Выберите почтовую папку Outlook для перемещения писем.")
+        return folder.EntryID
+
+    def _require_allowed_destination(self, folder: Any) -> None:
         folder_path = folder.FolderPath.casefold()
         store = self._inbox.Store
         for folder_type in (OL_FOLDER_DELETED_ITEMS, OL_FOLDER_OUTBOX, OL_FOLDER_JUNK):
-            protected = store.GetDefaultFolder(folder_type)
+            try:
+                protected = store.GetDefaultFolder(folder_type)
+            except _ComError as error:
+                if not _mapi_not_found(error):
+                    raise
+                continue
             if protected is not None:
                 protected_path = protected.FolderPath.casefold()
                 if folder_path == protected_path or folder_path.startswith(protected_path + "\\"):
                     raise ValueError("Для переноса выберите папку вне «Удалённых», «Исходящих» и «Нежелательной почты».")
-        return folder.EntryID
+
+    def _destination_folder(self, path: tuple[str, ...], *, create: bool) -> Any:
+        if not path or (path[:1] == ("",) and len(path) < 3):
+            raise ValueError("Укажите почтовую папку назначения Outlook.")
+        if len(path) == 1 and path[0].casefold() in INBOX_NAMES:
+            raise ValueError("В качестве папки назначения выберите папку вне системных «Входящих».")
+
+        parent = self._folder_at_path(path[:-1])
+        siblings = parent.Folders
+        name = _folder_name(path[-1])
+        matches = self._matching_children(siblings, name, root=(path[:1] == ("",) and len(path) == 3))
+        if not matches:
+            self._require_allowed_destination(parent)
+            if not create:
+                return None
+            matches = [siblings.Add(name, OL_FOLDER_INBOX)]
+        if len(matches) != 1:
+            raise OutlookError(f"В Outlook несколько папок «{' / '.join(part for part in path if part)}».")
+
+        folder = matches[0]
+        self._require_allowed_destination(folder)
+        if folder.EntryID == self._inbox.EntryID:
+            raise ValueError("В качестве папки назначения выберите папку вне системных «Входящих».")
+        if folder.DefaultItemType != OL_MAIL_ITEM:
+            raise ValueError("Выберите почтовую папку Outlook для перемещения писем.")
+        return folder
+
+    @_outlook_action("Не удалось проверить папку назначения Outlook")
+    def validate_destination_folder(self, path: tuple[str, ...]) -> str | None:
+        folder = self._destination_folder(path, create=False)
+        return folder.EntryID if folder is not None else None
+
+    @_outlook_action("Не удалось подготовить папку назначения Outlook")
+    def ensure_destination_folder(self, path: tuple[str, ...]) -> str:
+        self._require_write()
+        return self._destination_folder(path, create=True).EntryID
 
     @_outlook_action("Не удалось получить список папок Outlook")
     def list_folders(self, path: tuple[str, ...]) -> list[dict[str, Any]]:
@@ -200,11 +289,7 @@ class OutlookMailbox:
     @_outlook_action("Не удалось создать папку Outlook")
     def create_folder(self, parent: tuple[str, ...], name: str) -> dict[str, Any]:
         self._require_write()
-        if not isinstance(name, str) or any(ord(character) < 32 for character in name):
-            raise ValueError("Укажите имя новой папки Outlook.")
-        name = name.strip()
-        if not name or name in {".", ".."} or any(separator in name for separator in ("/", "\\")):
-            raise ValueError("Укажите имя одной папки Outlook без разделителей пути.")
+        name = _folder_name(name)
         if not parent and name.casefold() in INBOX_NAMES:
             raise ValueError("Это имя используется для системной папки «Входящие».")
 
@@ -240,9 +325,6 @@ class OutlookMailbox:
         if folder_id == self._inbox.EntryID:
             raise ValueError("Выберите папку, в которую Outlook будет переносить письма из «Входящих».")
         folder = self._folder(folder_id)
-        if folder.DefaultItemType != OL_MAIL_ITEM:
-            raise ValueError("Выберите почтовую папку Outlook для правила.")
-
         identity = "\0".join((address.username, address.domain.casefold(), subject_contains, folder_id))
         name = "Outlook Exporter " + sha256(identity.encode("utf-8")).hexdigest()[:16]
         rules = self._inbox.Store.GetRules()
@@ -272,47 +354,103 @@ class OutlookMailbox:
         return {"name": name, "created": True}
 
     @_outlook_action("Не удалось прочитать письма Outlook")
-    def iter_messages(self, folder_id: str) -> Iterator[dict[str, Any]]:
+    def iter_messages(
+        self, folder_id: str, *, read_legacy_status: bool = True, received_since: datetime | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        items = self._folder(folder_id).Items
+        sorted_by_received = False
+        if received_since is not None:
+            try:
+                items.Sort("[ReceivedTime]", True)
+                sorted_by_received = True
+            except _ComError:
+                LOGGER.debug("Outlook не смог отсортировать письма по дате получения", exc_info=True)
         messages = []
-        for mail in self._folder(folder_id).Items:
+        for mail in items:
             if mail.Class != OL_MAIL:
                 continue
             entry_id = mail.EntryID
             if not entry_id:
                 continue
-            processed = mail.UserProperties.Find(PROCESSED_PROPERTY)
-            messages.append({
+            # Outlook supplies local wall time as a COM DATE with no zone.
+            received = mail.ReceivedTime.replace(tzinfo=None)
+            if received_since is not None and received < received_since:
+                if sorted_by_received:
+                    break
+                continue
+            message = {
                 "id": entry_id,
-                # Outlook supplies local wall time as a COM DATE with no zone.
-                "receivedDateTime": mail.ReceivedTime.replace(tzinfo=None),
-                "categories": self._category_names(mail.Categories),
+                "receivedDateTime": received,
                 "subject": mail.Subject or "",
                 "unread": bool(mail.UnRead),
-                "_processed": processed is not None and bool(processed.Value),
-            })
+            }
+            if read_legacy_status:
+                self._read_legacy_status(mail, message)
+            messages.append(message)
         # Processing can move items out of the folder. Do not enumerate a changing collection.
         return iter(messages)
 
+    def _read_legacy_status(self, mail: Any, message: dict[str, Any]) -> None:
+        processed = mail.UserProperties.Find(PROCESSED_PROPERTY)
+        message["categories"] = self._category_names(mail.Categories)
+        message["_processed"] = processed is not None and bool(processed.Value)
+
+    @_outlook_action("Не удалось прочитать адрес отправителя Outlook")
+    def message_sender(self, message_id: str) -> str:
+        mail = self._mail(message_id)
+        if mail.SenderEmailType != "EX":
+            return (mail.SenderEmailAddress or "").strip()
+
+        smtp = _text_property(mail.PropertyAccessor, SENDER_SMTP_SCHEMAS)
+        if smtp and "@" in smtp:
+            return smtp.strip()
+
+        sender = mail.Sender
+        if sender is None:
+            return ""
+        if sender.AddressEntryUserType in EXCHANGE_USER_TYPES:
+            user = sender.GetExchangeUser()
+            if user is not None and user.PrimarySmtpAddress:
+                return user.PrimarySmtpAddress.strip()
+        smtp = _text_property(sender.PropertyAccessor, ADDRESS_ENTRY_SMTP_SCHEMAS)
+        return (smtp or "").strip()
+
     @_outlook_action("Не удалось прочитать идентификатор письма Outlook")
-    def message_identity(self, message_id: str) -> str | None:
-        return _internet_message_id(self._mail(message_id))
+    def message_identity(self, message_id: str, *, allow_unavailable: bool = False) -> str | None:
+        mail = self._mail(message_id)
+        try:
+            return _internet_message_id(mail, alternate_width=allow_unavailable)
+        except _ComError as error:
+            if not allow_unavailable or not _mapi_error_matches(
+                error, MAPI_E_NO_SUPPORT, MAPI_E_NO_ACCESS, MAPI_E_BAD_CHARWIDTH,
+            ):
+                raise
+            if not self._identity_warning_logged:
+                LOGGER.warning("Outlook не предоставил Message-ID. Для таких писем журнал использует EntryID Outlook.")
+                self._identity_warning_logged = True
+            return None
 
     @_outlook_action("Не удалось проверить копии письма в папке назначения Outlook")
-    def find_destination_matches(self, folder_id: str, identity: str) -> list[dict[str, Any]]:
+    def find_destination_matches(
+        self, folder_id: str, identity: str, *, read_legacy_status: bool = True,
+    ) -> list[dict[str, Any]]:
         escaped_identity = identity.replace("'", "''")
         conditions = [f"\"{schema}\" = '{escaped_identity}'" for schema in INTERNET_MESSAGE_ID_SCHEMAS]
-        matches = self._folder(folder_id).Items.Restrict("@SQL=" + " OR ".join(conditions))
+        items = self._folder(folder_id).Items
+        try:
+            matches = items.Restrict("@SQL=" + " OR ".join(conditions))
+        except _ComError:
+            LOGGER.debug("Outlook не смог выполнить поиск копий, используется просмотр папки", exc_info=True)
+            matches = items
         result = []
         for mail in matches:
             # The store may compare strings case-insensitively when applying the restriction.
-            if mail.Class != OL_MAIL or _internet_message_id(mail) != identity:
+            if mail.Class != OL_MAIL or _internet_message_id(mail, alternate_width=not read_legacy_status) != identity:
                 continue
-            processed = mail.UserProperties.Find(PROCESSED_PROPERTY)
-            result.append({
-                "id": mail.EntryID,
-                "categories": self._category_names(mail.Categories),
-                "_processed": processed is not None and bool(processed.Value),
-            })
+            match = {"id": mail.EntryID}
+            if read_legacy_status:
+                self._read_legacy_status(mail, match)
+            result.append(match)
         return result
 
     @_outlook_action("Не удалось прочитать вложения Outlook")
@@ -361,6 +499,24 @@ class OutlookMailbox:
             elif category.Color != color:
                 category.Color = color
 
+    @staticmethod
+    def _mark_read_if_allowed(mail: Any) -> bool:
+        try:
+            if mail.UnRead and mail.ReadReceiptRequested is False:
+                mail.UnRead = False
+                return True
+        except (AttributeError, _ComError):
+            # A provider may not expose the receipt flag or allow changing read state.
+            pass
+        return False
+
+    @_outlook_action("Не удалось отметить письмо прочитанным в Outlook")
+    def mark_read(self, message_id: str) -> None:
+        self._require_write()
+        mail = self._mail(message_id)
+        if self._mark_read_if_allowed(mail):
+            mail.Save()
+
     @_outlook_action("Не удалось записать результат в Outlook")
     def set_result(self, message_id: str, status: str, *, processed: bool, mark_read: bool = False) -> None:
         self._require_write()
@@ -381,23 +537,74 @@ class OutlookMailbox:
                 flag = properties.Add(PROCESSED_PROPERTY, OL_YES_NO, True)
             flag.Value = True
         if mark_read:
-            try:
-                if mail.UnRead and mail.ReadReceiptRequested is False:
-                    mail.UnRead = False
-            except (AttributeError, _ComError):
-                # A provider may not expose the receipt flag or allow changing read state.
-                pass
+            self._mark_read_if_allowed(mail)
         mail.Save()
 
     @staticmethod
     def is_processed(message: dict[str, Any]) -> bool:
         return bool(message.get("_processed"))
 
+    @_outlook_action("Не удалось проверить расположение письма в Outlook")
+    def is_in_folder(self, message_id: str, folder_id: str) -> bool:
+        try:
+            return self._mail(message_id).Parent.EntryID == folder_id
+        except _ComError as error:
+            if _mapi_not_found(error):
+                return False
+            raise
+
     @_outlook_action("Не удалось переместить письмо в Outlook")
-    def move_message(self, message_id: str, folder_id: str, *, expected_source: str | None = None) -> None:
+    def move_message(self, message_id: str, folder_id: str, *, expected_source: str | None = None) -> str:
         self._require_write()
         destination = self._folder(folder_id)
         mail = self._mail(message_id)
         if expected_source is not None and mail.Parent.EntryID != expected_source:
             raise OutlookError("Письмо уже находится вне исходной папки. Перемещение пропущено.")
-        mail.Move(destination)
+        moved = mail.Move(destination)
+        moved_id = moved.EntryID if moved is not None else None
+        if not moved_id:
+            raise OutlookError("Outlook не вернул идентификатор письма после перемещения.")
+        return moved_id
+
+    def wait_for_changes(self, folder_ids: Iterable[str], timeout: int) -> None:
+        """Wake on Outlook arrivals, with a timed scan for missed or unavailable events."""
+        deadline = monotonic() + timeout
+        subscriptions = []
+        arrived = False
+
+        class FolderEvents:
+            def OnItemAdd(self, _item):
+                nonlocal arrived
+                arrived = True
+
+        try:
+            import pythoncom
+            import win32event
+            from win32com.client import WithEvents
+
+            for folder_id in dict.fromkeys(folder_ids):
+                try:
+                    items = self._folder(folder_id).Items
+                    subscriptions.append((items, WithEvents(items, FolderEvents)))
+                except Exception:
+                    # WithEvents may fail while generating or loading the Outlook type library.
+                    LOGGER.debug("Не удалось подписаться на события папки Outlook", exc_info=True)
+            if subscriptions:
+                while not arrived:
+                    remaining = deadline - monotonic()
+                    if remaining <= 0:
+                        return
+                    # Keep the wait interruptible by Ctrl+C on Windows.
+                    win32event.MsgWaitForMultipleObjects((), False, min(250, ceil(remaining * 1000)), win32event.QS_ALLINPUT)
+                    if pythoncom.PumpWaitingMessages():
+                        raise KeyboardInterrupt
+                return
+        except Exception:
+            LOGGER.debug("События Outlook недоступны, используется опрос по таймеру", exc_info=True)
+        finally:
+            for _, subscription in subscriptions:
+                try:
+                    subscription.close()
+                except Exception:
+                    LOGGER.debug("Не удалось отключить события папки Outlook", exc_info=True)
+        sleep(max(0, deadline - monotonic()))

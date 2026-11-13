@@ -3,12 +3,17 @@ manage_categories = true
 # state_db = ".outlook-exporter.sqlite3"
 
 [[routes]]
-source = ["Inbox", "Необработанные"]
-move_to = ["Inbox", "Обработанные"]
+source = ["Inbox"]
+pending = ["Inbox", "Необработанные"]
+processed = ["Inbox", "Обработанные"]
+error = ["Inbox", "Ошибка"]
+subject_exact = "Ежедневный отчёт"
+# Вместо subject_exact можно указать subject_contains = "Ежедневный отчёт"
+# sender = "reports@example.com"
+attachment_filter = "any"
+include_existing = false
 output_dir = "./exported"
-allowed_extensions = ["xlsx", "xls", "xlsm", "xlsb"]
+allowed_extensions = []
 save_attachments = true
 save_message = false
-unread_only = true
 # mark_read_after_export = true
-# subject_contains = "Отчёт"

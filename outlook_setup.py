@@ -13,8 +13,15 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
 from outlook_com import OutlookMailbox
-from outlook_config import read_settings_data, require_local_path, validate_settings, write_settings
-from outlook_exporter import resolve_routes
+from outlook_config import (
+    ROUTE_FIELDS,
+    folder_path,
+    read_settings_data,
+    require_local_path,
+    validate_settings,
+    write_settings,
+)
+from outlook_exporter import matches_incoming, resolve_pipeline_routes, resolve_routes
 
 
 HOST = "127.0.0.1"
@@ -29,12 +36,7 @@ class RequestError(ValueError):
 
 
 def folder_parts(value: object) -> tuple[str, ...]:
-    if not isinstance(value, list) or any(
-        not isinstance(part, str) or not part.strip() or any(ord(char) < 32 for char in part)
-        for part in value
-    ):
-        raise ValueError("Укажите путь к папке Outlook как список имён")
-    return tuple(value)
+    return folder_path(value, "Папка Outlook", allow_root=True)
 
 
 def open_mailbox(*, dry_run: bool) -> OutlookMailbox:
@@ -139,12 +141,8 @@ class SettingsHandler(BaseHTTPRequestHandler):
         result["settings"] = {
             key: data[key] for key in ("poll_interval_seconds", "manage_categories", "state_db", "routes") if key in data
         }
-        allowed_route_fields = (
-            "source", "output_dir", "allowed_extensions", "move_to", "save_attachments",
-            "save_message", "subject_contains", "unread_only", "mark_read_after_export",
-        )
         result["settings"]["routes"] = [
-            {key: route[key] for key in allowed_route_fields if key in route} for route in data["routes"]
+            {key: route[key] for key in ROUTE_FIELDS if key in route} for route in data["routes"]
         ]
         return result
 
@@ -177,10 +175,45 @@ class SettingsHandler(BaseHTTPRequestHandler):
         elif path == "/api/validate":
             settings = validate_settings(data.get("settings"), self.server.config_path)
             if data.get("check_outlook") is True:
-                resolve_routes(open_mailbox(dry_run=True), settings)
-                result = {"message": "Настройки корректны. Все папки найдены в текущем Outlook."}
+                mailbox = open_mailbox(dry_run=True)
+                resolve_routes(mailbox, settings)
+                resolve_pipeline_routes(mailbox, settings, create_missing=False)
+                result = {"message": "Пути в Outlook проверены. Недостающие папки обработки будут созданы при запуске."}
             else:
                 result = {"message": "Настройки корректны. Наличие папок Outlook можно проверить отдельно."}
+        elif path == "/api/preview":
+            settings = validate_settings(data.get("settings"), self.server.config_path)
+            index = data.get("route_index")
+            if type(index) is not int or not 0 <= index < len(settings.routes):
+                raise ValueError("Выберите правило для проверки")
+            route = settings.routes[index]
+            if route.pending is None:
+                raise ValueError("Проверка отбора доступна для правил с папкой «Необработанные»")
+            mailbox = open_mailbox(dry_run=True)
+            resolved_rules = resolve_pipeline_routes(mailbox, settings, create_missing=False)
+            position = sum(earlier.pending is not None for earlier in settings.routes[:index])
+            resolved = resolved_rules[position]
+            earlier_rules = [item.route for item in resolved_rules[:position] if item.source == resolved.source]
+            messages = list(mailbox.iter_messages(resolved.source, read_legacy_status=False))
+            matched = 0
+            claimed_earlier = 0
+            for message in messages:
+                if not matches_incoming(mailbox, message, route):
+                    continue
+                matched += 1
+                if any(matches_incoming(mailbox, message, earlier) for earlier in earlier_rules):
+                    claimed_earlier += 1
+            pending = 0 if resolved.pending is None else sum(
+                1 for _ in mailbox.iter_messages(resolved.pending, read_legacy_status=False)
+            )
+            result = {
+                "scanned": len(messages),
+                "matched": matched,
+                "pending": pending,
+                "message": f"Совпало писем: {matched} из {len(messages)}. Уже в очереди: {pending}.",
+            }
+            if claimed_earlier:
+                result["message"] += f" Также подходят более ранним правилам: {claimed_earlier}."
         elif path == "/api/folders":
             parent = folder_parts(data.get("parent"))
             name = data.get("name")

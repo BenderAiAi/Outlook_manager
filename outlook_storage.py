@@ -10,6 +10,7 @@ import stat
 import tempfile
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 
 
@@ -68,9 +69,91 @@ class Storage:
                 PRIMARY KEY (route_key, identity_hash)
             )
         """)
+        self._connection.execute("""
+            CREATE TABLE IF NOT EXISTS pipeline_cutoffs (
+                route_key TEXT PRIMARY KEY,
+                activated_at TEXT NOT NULL
+            )
+        """)
+        self._connection.execute("""
+            CREATE TABLE IF NOT EXISTS pipeline_processed (
+                route_key TEXT NOT NULL,
+                identity_hash TEXT NOT NULL,
+                message_id TEXT NOT NULL,
+                moved INTEGER NOT NULL,
+                PRIMARY KEY (route_key, identity_hash)
+            )
+        """)
+        self._connection.execute("""
+            CREATE TABLE IF NOT EXISTS pipeline_errors (
+                route_key TEXT NOT NULL,
+                source_id TEXT NOT NULL,
+                message_id TEXT NOT NULL,
+                PRIMARY KEY (route_key, message_id)
+            )
+        """)
 
     def close(self) -> None:
         self._connection.close()
+
+    def pipeline_cutoff(self, route_key: str, started: datetime) -> datetime:
+        with self._connection:
+            self._connection.execute(
+                "INSERT OR IGNORE INTO pipeline_cutoffs VALUES (?, ?)", (route_key, started.isoformat()),
+            )
+            (value,) = self._connection.execute(
+                "SELECT activated_at FROM pipeline_cutoffs WHERE route_key = ?", (route_key,),
+            ).fetchone()
+        return datetime.fromisoformat(value)
+
+    def pipeline_processed(self, route_key: str, identity: str) -> tuple[str, bool] | None:
+        identity_hash = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+        row = self._connection.execute(
+            "SELECT message_id, moved FROM pipeline_processed WHERE route_key = ? AND identity_hash = ?",
+            (route_key, identity_hash),
+        ).fetchone()
+        return (row[0], bool(row[1])) if row else None
+
+    def set_pipeline_processed(self, route_key: str, identity: str, message_id: str, *, moved: bool) -> None:
+        identity_hash = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+        with self._connection:
+            self._connection.execute(
+                """
+                INSERT INTO pipeline_processed VALUES (?, ?, ?, ?)
+                ON CONFLICT (route_key, identity_hash)
+                DO UPDATE SET message_id = excluded.message_id, moved = excluded.moved
+                """,
+                (route_key, identity_hash, message_id, moved),
+            )
+
+    def pipeline_error_pending(self, route_key: str, message_id: str) -> bool:
+        return self._connection.execute(
+            "SELECT 1 FROM pipeline_errors WHERE route_key = ? AND message_id = ?", (route_key, message_id),
+        ).fetchone() is not None
+
+    def pipeline_errors_in(self, route_key: str, source_id: str) -> list[str]:
+        return [row[0] for row in self._connection.execute(
+            "SELECT message_id FROM pipeline_errors WHERE route_key = ? AND source_id = ?",
+            (route_key, source_id),
+        )]
+
+    def queue_pipeline_error(self, route_key: str, source_id: str, message_id: str) -> None:
+        with self._connection:
+            self._connection.execute(
+                "INSERT OR IGNORE INTO pipeline_errors (route_key, source_id, message_id) VALUES (?, ?, ?)",
+                (route_key, source_id, message_id),
+            )
+
+    def discard_pipeline_claim(self, route_key: str, message_id: str) -> None:
+        with self._connection:
+            self._connection.execute(
+                "DELETE FROM pipeline_processed WHERE route_key = ? AND message_id = ? AND moved = 0",
+                (route_key, message_id),
+            )
+
+    def clear_pipeline_error(self, route_key: str, message_id: str) -> None:
+        with self._connection:
+            self._connection.execute("DELETE FROM pipeline_errors WHERE route_key = ? AND message_id = ?", (route_key, message_id))
 
     def has_saved_attachments(self, route_key: str, message_id: str) -> bool:
         return self._connection.execute(
@@ -87,6 +170,18 @@ class Storage:
             "SELECT 1 FROM attachment_files WHERE route_key = ? AND message_id = ? LIMIT 1",
             (route_key, message_id),
         ).fetchone() is not None
+
+    def previous_export_key(self, route_key: str, message_id: str, identity: str | None) -> str | None:
+        if self.has_attachment_records(route_key, message_id):
+            return message_id
+        if identity is None:
+            return None
+        identity_hash = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+        row = self._connection.execute(
+            "SELECT storage_message_id FROM message_export_keys WHERE route_key = ? AND identity_hash = ?",
+            (route_key, identity_hash),
+        ).fetchone()
+        return row[0] if row and self.has_attachment_records(route_key, row[0]) else None
 
     def export_key(self, route_key: str, message_id: str, identity: str | None) -> str:
         if identity is None:
