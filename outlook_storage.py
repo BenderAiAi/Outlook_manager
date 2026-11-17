@@ -16,6 +16,7 @@ from pathlib import Path
 
 LOGGER = logging.getLogger(__name__)
 DISK_RESERVE_BYTES = 256 * 1024 * 1024
+USE_NOCLOBBER_RENAME = os.name == "nt"
 
 
 class InsufficientDiskSpace(OSError):
@@ -58,9 +59,15 @@ class Storage:
                 requested_path TEXT NOT NULL,
                 collision_number INTEGER NOT NULL DEFAULT 0,
                 staged_path TEXT,
+                staged_digest TEXT,
                 PRIMARY KEY (route_key, message_id, attachment_id)
             )
         """)
+        with self._connection:
+            self._connection.execute("BEGIN IMMEDIATE")
+            columns = self._connection.execute("PRAGMA table_info(attachment_files)")
+            if not any(column[1] == "staged_digest" for column in columns):
+                self._connection.execute("ALTER TABLE attachment_files ADD COLUMN staged_digest TEXT")
         self._connection.execute("""
             CREATE TABLE IF NOT EXISTS message_export_keys (
                 route_key TEXT NOT NULL,
@@ -239,10 +246,10 @@ class Storage:
             raise OSError(f"Выгруженный файл недоступен: {destination}")
         return destination
 
-    def _get_attachment(self, key: tuple[str, str, str]) -> tuple[str, int, str | None] | None:
+    def _get_attachment(self, key: tuple[str, str, str]) -> tuple[str, int, str | None, str | None] | None:
         return self._connection.execute(
             """
-            SELECT requested_path, collision_number, staged_path FROM attachment_files
+            SELECT requested_path, collision_number, staged_path, staged_digest FROM attachment_files
             WHERE route_key = ? AND message_id = ? AND attachment_id = ?
             """,
             key,
@@ -260,12 +267,24 @@ class Storage:
             self._connection.execute("BEGIN IMMEDIATE")
             row = self._get_attachment(key)
             if row is not None:
-                recorded_path, collision_number, staged_name = row
+                recorded_path, collision_number, staged_name, staged_digest = row
                 requested_path = Path(recorded_path)
-                previous_file = Path(staged_name) if staged_name is not None else self._destination(
-                    requested_path, collision_number,
-                )
+                destination = self._destination(requested_path, collision_number)
+                previous_file = Path(staged_name) if staged_name is not None else destination
                 if self._is_regular_file(previous_file):
+                    if USE_NOCLOBBER_RENAME and staged_name is not None and staged_digest is None:
+                        # A previous version may have left a staged file in the journal.
+                        self._connection.execute(
+                            """
+                            UPDATE attachment_files SET staged_digest = ?
+                            WHERE route_key = ? AND message_id = ? AND attachment_id = ?
+                            """,
+                            (self._file_digest(previous_file), *key),
+                        )
+                    return
+                # The rename may have succeeded before SQLite could commit the result.
+                if staged_digest and self._is_regular_file(destination) and self._file_digest(destination) == staged_digest:
+                    self._mark_published(key)
                     return
 
             requested_path.parent.mkdir(parents=True, exist_ok=True)
@@ -286,16 +305,17 @@ class Storage:
                     raise InsufficientDiskSpace(f"После выгрузки в {requested_path.parent} осталось меньше 256 МиБ.")
                 with staged_path.open("r+b") as staged_file:
                     os.fsync(staged_file.fileno())
+                staged_digest = self._file_digest(staged_path) if USE_NOCLOBBER_RENAME else None
 
                 self._connection.execute(
                     """
                     INSERT INTO attachment_files
-                        (route_key, message_id, attachment_id, requested_path, staged_path)
-                    VALUES (?, ?, ?, ?, ?)
+                        (route_key, message_id, attachment_id, requested_path, staged_path, staged_digest)
+                    VALUES (?, ?, ?, ?, ?, ?)
                     ON CONFLICT (route_key, message_id, attachment_id)
-                    DO UPDATE SET staged_path = excluded.staged_path
+                    DO UPDATE SET staged_path = excluded.staged_path, staged_digest = excluded.staged_digest
                     """,
-                    (*key, str(requested_path), str(staged_path)),
+                    (*key, str(requested_path), str(staged_path), staged_digest),
                 )
             except BaseException:
                 if staged_path is not None:
@@ -309,7 +329,7 @@ class Storage:
                 row = self._get_attachment(key)
                 if row is None:
                     raise RuntimeError("В журнале отсутствует запись о сохранении вложения")
-                requested_path, collision_number, staged_name = row
+                requested_path, collision_number, staged_name, _ = row
                 original = Path(requested_path)
                 destination = self._destination(original, collision_number)
                 if staged_name is None:
@@ -318,14 +338,19 @@ class Storage:
                 staged_path = Path(staged_name)
                 if not self._is_regular_file(staged_path):
                     raise OSError(f"Временный файл выгрузки недоступен: {staged_path}")
+                cleanup = not USE_NOCLOBBER_RENAME
                 try:
-                    os.link(staged_path, destination)
+                    if USE_NOCLOBBER_RENAME:
+                        # Windows rename fails if the destination exists. A same-directory rename works on SMB shares.
+                        os.rename(staged_path, destination)
+                    else:
+                        os.link(staged_path, destination)
                 except FileExistsError:
                     if not self._was_published(staged_path, destination):
                         collision_number += 1
                         while os.path.lexists(self._destination(original, collision_number)):
                             collision_number += 1
-                        # Record the new path before publishing it so a retry can find its link.
+                        # Record the new path before publishing it so a retry can find the file.
                         self._connection.execute(
                             """
                             UPDATE attachment_files SET collision_number = ?
@@ -334,22 +359,32 @@ class Storage:
                             (collision_number, *key),
                         )
                         continue
+                    cleanup = True
                 except OSError as error:
-                    raise OSError(
-                        f"Не удалось опубликовать вложение {destination}: {error}. "
-                        "Папка выгрузки должна поддерживать жёсткие ссылки."
-                    ) from error
+                    raise OSError(f"Не удалось сохранить файл {destination}: {error}") from error
 
-                self._connection.execute(
-                    """
-                    UPDATE attachment_files SET staged_path = NULL
-                    WHERE route_key = ? AND message_id = ? AND attachment_id = ?
-                    """,
-                    key,
-                )
+                self._mark_published(key)
 
-            self._remove_staging_file(staged_path)
+            if cleanup:
+                self._remove_staging_file(staged_path)
             return destination
+
+    def _mark_published(self, key: tuple[str, str, str]) -> None:
+        self._connection.execute(
+            """
+            UPDATE attachment_files SET staged_path = NULL, staged_digest = NULL
+            WHERE route_key = ? AND message_id = ? AND attachment_id = ?
+            """,
+            key,
+        )
+
+    @staticmethod
+    def _file_digest(path: Path) -> str:
+        digest = hashlib.sha256()
+        with path.open("rb") as file:
+            for chunk in iter(lambda: file.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
 
     @staticmethod
     def _is_regular_file(path: Path) -> bool:
@@ -367,7 +402,9 @@ class Storage:
     @staticmethod
     def _was_published(staged_path: Path, destination: Path) -> bool:
         try:
-            return not destination.is_symlink() and destination.samefile(staged_path)
+            first = staged_path.lstat()
+            second = destination.lstat()
+            return bool(first.st_ino) and stat.S_ISREG(second.st_mode) and os.path.samestat(first, second)
         except FileNotFoundError:
             return False
 

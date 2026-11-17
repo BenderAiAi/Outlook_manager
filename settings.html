@@ -40,7 +40,7 @@
     button, input, select { font: inherit; }
     :where(button, input, select, summary) { scroll-margin-block: 16px; }
     button, summary, select { cursor: pointer; }
-    button:disabled { opacity: .62; cursor: default; }
+    button:disabled, .pick-output[aria-disabled="true"] { opacity: .62; cursor: default; }
     button, summary { touch-action: manipulation; }
     .skip-link { position: fixed; top: 10px; left: 12px; z-index: 3; padding: 8px 12px; background: var(--card); color: var(--accent-dark); }
     .skip-link:not(:focus) { clip-path: inset(50%); }
@@ -148,6 +148,7 @@
     .button.outline, .button.picker { background: var(--secondary); }
     .button.outline:hover:not(:disabled), .button.picker:hover:not(:disabled) { background: var(--secondary-hover); }
     .button.picker { display: grid; place-items: center; min-width: 37px; min-height: 36px; padding: 4px; color: var(--accent); }
+    .button.pick-output { min-height: 36px; padding-inline: 8px; }
     .rule-foot { display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 5px 12px; padding: 9px 19px; border-top: 1px solid var(--line); }
     .rule-foot .caption { padding-top: 5px; }
     .advanced { border-top: 1px solid var(--line); padding: 0 19px 5px; }
@@ -205,7 +206,7 @@
       .topbar nav { min-height: 33px; gap: 13px; }
       .page-heading { align-items: flex-start; flex-direction: column; margin-bottom: 12px; }
       .form-grid { grid-template-columns: minmax(0, 1fr); }
-      .button, .button.picker, input:not([type="checkbox"]), select { min-height: 42px; }
+      .button, .button.picker, .button.pick-output, input:not([type="checkbox"]), select { min-height: 42px; }
     }
     @media (max-width: 350px) {
       .subject-input { flex-wrap: wrap; }
@@ -411,15 +412,15 @@
           </section>
           <section class="stage">
             <div class="stage-heading">
-              <svg class="icon" aria-hidden="true"><use href="#icon-disk"/></svg><h3>Сохранение на компьютер</h3>
+              <svg class="icon" aria-hidden="true"><use href="#icon-disk"/></svg><h3>Сохранение файлов</h3>
             </div>
             <div class="field">
-              <label data-label="output-dir">Локальная папка</label>
+              <label data-label="output-dir">Папка для сохранения</label>
               <div class="inline-field">
-                <input class="path" data-field="output-dir" type="text" autocomplete="off" spellcheck="false" placeholder="C:\Отчёты\Почта" required>
-                <button class="button picker pick-output" aria-label="Выбрать папку на диске" type="button"><svg class="icon" aria-hidden="true"><use href="#icon-folder"/></svg></button>
+                <input class="path" data-field="output-dir" type="text" autocomplete="off" spellcheck="false" required>
+                <button class="button outline pick-output" type="button">Выбрать папку</button>
               </div>
-              <p class="caption">Путь можно вставить из Проводника.</p>
+              <p class="caption" data-output-hint>Можно вставить путь из Проводника Windows.</p>
               <p class="notice output-status" role="status"></p>
             </div>
             <div class="field">
@@ -734,6 +735,9 @@
       }
       route.querySelector("[data-output-label]").id = `${route.id}-output-label`;
       route.querySelector("[data-output-group]").setAttribute("aria-labelledby", `${route.id}-output-label`);
+      const outputHint = route.querySelector("[data-output-hint]");
+      outputHint.id = `${route.id}-output-hint`;
+      field(route, "output-dir").setAttribute("aria-describedby", outputHint.id);
       for (const name of ["source", "pending", "processed", "error"]) {
         writeFolder(field(route, name), rule[name] ?? (name === "source" ? ["Inbox"] : []));
       }
@@ -955,9 +959,12 @@
     }
 
     async function pickOutput(route, button) {
+      if (button.getAttribute("aria-disabled") === "true") {
+        return;
+      }
       const status = route.querySelector(".output-status");
-      button.disabled = true;
-      notice(status, "Открываем выбор папки Windows…");
+      button.setAttribute("aria-disabled", "true");
+      notice(status, "Открываем окно выбора папки Windows…");
       try {
         const result = await request("/api/output-directory", {});
         if (result.path) {
@@ -968,7 +975,7 @@
       } catch (error) {
         notice(status, error.message, "error");
       } finally {
-        button.disabled = false;
+        button.removeAttribute("aria-disabled");
       }
     }
 

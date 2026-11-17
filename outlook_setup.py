@@ -47,30 +47,26 @@ def open_mailbox(*, dry_run: bool) -> OutlookMailbox:
 
 def pick_output_directory() -> str | None:
     if os.name != "nt":
-        raise ValueError("Системный выбор каталога доступен на Windows. Введите путь вручную.")
+        raise ValueError("Выбор папки доступен на Windows. Путь можно вставить вручную.")
 
-    from pywintypes import com_error
-    from win32com.client import Dispatch
-
-    return_only_fs_dirs = 0x01
-    edit_box = 0x10
-    new_dialog_style = 0x40
     try:
-        folder = Dispatch("Shell.Application").BrowseForFolder(
-            0, "Выберите каталог для выгрузки из Outlook", return_only_fs_dirs | edit_box | new_dialog_style
-        )
-        if folder is None:
-            return None
-        path = Path(folder.Self.Path)
-    except com_error as error:
-        raise ValueError("Не удалось открыть системный выбор каталога Windows") from error
+        import tkinter as tk
+        from tkinter import filedialog
+    except ImportError as error:
+        raise ValueError("Не удалось открыть окно выбора папки. Путь можно вставить вручную.") from error
 
-    require_local_path(path)
-    path = path.resolve()
-    require_local_path(path)
-    if not path.is_dir():
-        raise ValueError("Выберите каталог на локальном диске")
-    return str(path)
+    try:
+        owner = tk.Tk()
+        try:
+            owner.withdraw()
+            owner.attributes("-topmost", True)
+            folder = filedialog.askdirectory(parent=owner, title="Выберите папку для сохранения", mustexist=True)
+        finally:
+            owner.destroy()
+    except tk.TclError as error:
+        raise ValueError("Не удалось открыть окно выбора папки. Путь можно вставить вручную.") from error
+
+    return os.path.normpath(folder) if folder else None
 
 
 class SetupServer(HTTPServer):

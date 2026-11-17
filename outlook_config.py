@@ -91,13 +91,13 @@ def require_local_path(path: Path) -> None:
 
     drive = path.drive or Path.cwd().drive
     if drive.startswith("\\\\"):
-        raise ValueError("Укажите путь на локальном диске Windows")
+        raise ValueError("Выберите другой путь для файла настроек или журнала")
 
     from ctypes import windll
 
     drive_remote = 4
     if drive and windll.kernel32.GetDriveTypeW(drive + "\\") == drive_remote:
-        raise ValueError("Укажите путь на локальном диске Windows")
+        raise ValueError("Выберите другой путь для файла настроек или журнала")
 
 
 def _resolve_local_path(path: Path) -> Path:
@@ -107,14 +107,14 @@ def _resolve_local_path(path: Path) -> Path:
     return resolved
 
 
-def filesystem_path(value: object, base: Path, setting: str) -> Path:
+def _configured_path(value: object, base: Path, setting: str) -> Path:
     if not isinstance(value, str):
         raise ValueError(f"{setting} должен содержать путь")
     value = _unquote_path(value)
     if not value.strip() or "\0" in value:
         raise ValueError(f"{setting} должен содержать путь")
     path = Path(os.path.expandvars(value)).expanduser()
-    return _resolve_local_path(base / path)
+    return base / path
 
 
 def read_settings_data(config_path: Path) -> dict:
@@ -134,9 +134,9 @@ def validate_settings(data: dict, config_path: Path) -> Settings:
     if type(manage_categories) is not bool:
         raise ValueError("manage_categories должен быть true или false")
 
-    state_db = filesystem_path(
+    state_db = _resolve_local_path(_configured_path(
         data.get("state_db", DEFAULT_STATE_DB), config_path.parent, "state_db"
-    )
+    ))
     if state_db.is_relative_to(config_path) or state_db.is_dir():
         raise ValueError("state_db должен указывать на отдельный файл журнала")
 
@@ -219,7 +219,7 @@ def validate_settings(data: dict, config_path: Path) -> Settings:
                     raise ValueError(f"{label}: укажите полный адрес отправителя") from error
                 if not address.username or not address.domain or address.addr_spec != filters["sender"]:
                     raise ValueError(f"{label}: укажите полный адрес отправителя")
-        output_dir = filesystem_path(values.get("output_dir"), config_path.parent, f"{label}.output_dir")
+        output_dir = _configured_path(values.get("output_dir"), config_path.parent, f"{label}.output_dir").resolve()
         if output_dir.is_relative_to(config_path) or output_dir.is_relative_to(state_db) or output_dir.is_file():
             raise ValueError(f"{label}.output_dir должен указывать на каталог выгрузки")
 
